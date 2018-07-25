@@ -137,7 +137,7 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
   IF (WC%VEG_HEIGHT > 0.0_EB) THEN
 !if (nm==1 .and. iig==10 .and. jjg==10) print '(A,1x,3ES12.3)','vege: SF%VEG_HEIGHT,WC%VEG_HEIGHT,SF%VEG_DRAG_INI', &
 !                                                             SF%VEG_HEIGHT,WC%VEG_HEIGHT,SF%VEG_DRAG_INI
-    DO KGRID=0,8
+    DO KGRID=0,10
       KLOC = KKG + KGRID
 !if (nm==1 .and. iig==10 .and. jjg==10) print '(A,1x,3I3,1ES12.4)','vege: KGRID,KKG,KLOC,Z(KLOC)',kgrid,kkg,kloc,z(kloc)
       IF (Z(KLOC) <= WC%VEG_HEIGHT) THEN !grid cell filled with veg
@@ -230,7 +230,8 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
 
 ! Determine vertical gas-phase grid cell index for each vegetation layer. 
 ! This is needed for cases in which the vegetation height is larger than the height of the first grid cell
-! The WC% and SF% indices are related by WC% goes from LBURN+1 to NVEG_L as SF% goes from 1 to NVEG_L to LBURN.
+! The WC% and SF% indices are related. As the WC% index goes from LBURN+1 to NVEG_L the SF% index goes 
+! from 1 to NVEG_L - LBURN.
 ! Also, with increasing index value we pass from the top of the vegetation to the bottom
 
 ! SF%VEG_KGAS_L(:) = 0
@@ -281,7 +282,8 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
 !    SF%VEG_SEMISSP_RADFCT_L(IVEG_L,IIVEG_L) = EXP(-(ETAI_VEG-ETAG_VEG))
      ETAFM_VEG = REAL((IVEG_L-IIVEG_L),EB)*DETA_VEG
      ETAFP_VEG = ETAFM_VEG + DETA_VEG
-     SF%VEG_SEMISSP_RADFCT_L(IVEG_L,IIVEG_L) = EXP(-ETAFM_VEG) - EXP(-ETAFP_VEG)
+!    SF%VEG_SEMISSP_RADFCT_L(IVEG_L,IIVEG_L) = EXP(-ETAFM_VEG) - EXP(-ETAFP_VEG)
+     SF%VEG_SEMISSP_RADFCT_L(IVEG_L,IIVEG_L) = EXP(-ETAFM_VEG)*(1.0_EB - EXP(-DETA_VEG))
     ENDDO
   ENDDO
 ! q-
@@ -292,7 +294,8 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
 !    SF%VEG_SEMISSM_RADFCT_L(IVEG_L,IIVEG_L) = EXP(-(ETAG_VEG-ETAI_VEG))
      ETAFM_VEG = REAL((IIVEG_L-IVEG_L),EB)*DETA_VEG
      ETAFP_VEG = ETAFM_VEG + DETA_VEG
-     SF%VEG_SEMISSM_RADFCT_L(IVEG_L,IIVEG_L) = EXP(-ETAFM_VEG) - EXP(-ETAFP_VEG)
+!    SF%VEG_SEMISSM_RADFCT_L(IVEG_L,IIVEG_L) = EXP(-ETAFM_VEG) - EXP(-ETAFP_VEG)
+     SF%VEG_SEMISSM_RADFCT_L(IVEG_L,IIVEG_L) = EXP(-ETAFM_VEG)*(1.0_EB - EXP(-DETA_VEG))
     ENDDO
   ENDDO
 !
@@ -393,11 +396,11 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
     ENDIF
 
     QCONF_L  = H_CONV_L*DTMP_L
-    SF%VEG_DIVQNET_L(I) = SF%VEG_PACKING*SF%VEG_SV*QCONF_L*DZVEG_L !W/m^2
+    SF%VEG_DIVQNET_L(I) = SF%VEG_PACKING*SF%VEG_SV*QCONF_L*DZVEG_L !W/m^2 see Mell et al. 2007 IJWF accessory pub
 
   ENDDO
 !
-  WC%ONE_D%QCONF = SUM(SF%VEG_DIVQNET_L) !*RDN(IW)*WC%VEG_HEIGHT
+! WC%ONE_D%QCONF = -SUM(SF%VEG_DIVQNET_L) !negative because seen by gas
 ! qconf(iw) = 0.0_EB
 !
 ! -----------------------------------------------
@@ -514,7 +517,19 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
       CP_CHAR     = 420._EB + 2.09_EB*TMP_VEG + 6.85E-4_EB*TMP_VEG**2 !J/kg/K Park etal. C&F 2010 147:481-494
       CP_TOTAL    = CP_H2O*MPA_MOIST +  CP_VEG*MPA_VEG + CP_CHAR*MPA_CHAR
       DTMP_VEG    = DT_BC*QNET_VEG/CP_TOTAL
-      TMP_VEG_NEW = TMP_VEG + DTMP_VEG 
+      TMP_VEG_NEW = TMP_VEG + DTMP_VEG
+!     TMP_VEG_NEW = MAX(TMP_VEG_NEW,TMPA)
+!if (tmp_veg_new < TMPA) then
+! print*,'-----------'
+! print '(A,1x,1I3,9ES16.3)','DRY-:iv,tmpv,dtmp,mpav,cpv,mpaw,cpw,mpac,cpc,qnet',iveg_l,tmp_veg,dtmp_veg,mpa_veg, &
+!                            cp_veg,mpa_moist,cp_h2o,mpa_char,cp_char,qnet_veg
+!endif
+
+!checking for source of high temp (it's from char)
+!if(wc%veg_tmp_l(1+lburn) > 500._EB) then 
+! print '(A,1x,1I3,5ES16.8)','---- lburn+1,tmpv,vegmass,moistmass,charmass,qnet_veg',lburn+1,wc%veg_tmp_l(1+lburn), &
+!    wc%veg_fuelmass_l(1+lburn),wc%veg_moistmass_l(1+lburn),wc%veg_charmass_l(1+lburn),qnet_veg
+!endif
 
       IF_DIVQ_L_GE_0: IF(QNET_VEG > 0._EB) THEN 
 
@@ -535,7 +550,7 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
 
 !Newer version, includes char which becomes a heat sink since its not oxidized
         IF(TMP_VEG_NEW >= 400._EB .AND. MPA_VEG > MPA_VEG_MIN) THEN
-          Q_UPTO_VOLIT = (CP_VEG*MPA_VEG + CP_CHAR*MPA_CHAR)*(400._EB-TMP_VEG)
+          Q_UPTO_VOLIT = MAX((CP_VEG*MPA_VEG + CP_CHAR*MPA_CHAR)*(400._EB-TMP_VEG),0.0_EB)
 !         Q_UPTO_VOLIT = CP_VEG*MPA_VEG*(400._EB-TMP_VEG)
           Q_FOR_VOLIT  = DT_BC*QNET_VEG - Q_UPTO_VOLIT
           Q_VOLIT      = Q_FOR_VOLIT*0.01_EB*(TMP_VEG-400._EB)
@@ -553,8 +568,14 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
           Q_VOLIT      = MPA_VOLIT*H_PYR_VEG 
 
           TMP_VEG_NEW  = TMP_VEG + (Q_FOR_VOLIT-Q_VOLIT)/(MPA_VEG*CP_VEG + MPA_CHAR*CP_CHAR)
+!if (tmp_veg_new < TMPA) then
+! print*,'-----------'
+! print '(A,1x,1I3,7ES16.8)','PY:iv,tmp_veg,q_f_v,q_v,mveg,cpv,mc,cpc',iveg_l,tmp_veg,q_for_volit,q_volit, &
+!                             mpa_veg,cp_veg,mpa_char,cp_char
+!endif
 !         TMP_VEG_NEW  = TMP_VEG + (Q_FOR_VOLIT-Q_VOLIT)/(MPA_VEG*CP_VEG)
           TMP_VEG_NEW  = MIN(TMP_VEG_NEW,500._EB)
+!         TMP_VEG_NEW  = MAX(TMP_VEG_NEW,TMPA)
           WC%VEG_CHARMASS_L(IVEG_L) = MPA_CHAR
           WC%VEG_FUELMASS_L(IVEG_L) = MPA_VEG
           IF( WC%VEG_FUELMASS_L(IVEG_L) <= MPA_VEG_MIN ) WC%VEG_FUELMASS_L(IVEG_L) = 0.0_EB !**
@@ -585,8 +606,14 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
 
       ENDIF IF_DIVQ_L_GE_0
       
-      IF(MPA_VEG <= MPA_VEG_MIN) TMP_VEG_NEW = TMP_G
+      IF(MPA_VEG <= MPA_VEG_MIN) TMP_VEG_NEW = MAX(TMP_G,TMPA)
+      IF (TMP_VEG_NEW .LT. TMPA) TMP_VEG_NEW = TMPA
       WC%VEG_TMP_L(IVEG_L) = TMP_VEG_NEW
+!if (tmp_veg_new < TMPA) then
+! print*,'-----------'
+! print '(A,1x,1I3,7ES16.8)','PY+:iv,tmp_veg_new,q_f_v,q_v,mveg,cpv,mc,cpc',iveg_l,tmp_veg_new,q_for_volit,q_volit, &
+!                             mpa_veg,cp_veg,mpa_char,cp_char
+!endif
 
     ENDDO LAYER_LOOP1
 
@@ -722,7 +749,7 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
       WC%VEG_TMP_L(IVEG_L) = WC%VEG_TMP_L(IVEG_L) + (DT_BC*SF%VEG_DIVQNET_L(IVEG_L-LBURN) - &
                              (MPA_MOIST_LOSS*H_H2O_VEG + MPA_VOLIT*H_PYR_VEG) + CHAR_ENTHALPY_FRACTION_VEG*Q_VEG_CHAR ) &
                              /CP_MOIST_AND_VEG
-      WC%VEG_TMP_L(IVEG_L) = MAX( WC%VEG_TMP_L(IVEG_L), TMPA)
+!     WC%VEG_TMP_L(IVEG_L) = MAX( WC%VEG_TMP_L(IVEG_L), TMPA)
       WC%VEG_TMP_L(IVEG_L) = MIN( WC%VEG_TMP_L(IVEG_L), TMP_CHAR_MAX)
 
     ENDDO LAYER_LOOP2
@@ -739,15 +766,26 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
 ! Mass boundary conditions are determine in subroutine SPECIES_BC in wall.f90 for case SPECIFIED_MASS_FLUX
 ! TMP_F(IW) = WC%VEG_TMP_L(NVEG_L)
 ! IF (LBURN < NVEG_L)  TMP_F(IW) = WC%VEG_TMP_L(1+LBURN)
+
   IF (LBURN < NVEG_L) THEN
     WC%ONE_D%TMP_F = WC%VEG_TMP_L(1+LBURN)
-if (wc%one_d%tmp_f < 0.0_EB) print '(A,1x,1ES16.8)','vege:wall(iw)%tmp_f',wc%one_d%tmp_f
-!   TMP_F(IW) = ((VEG_QRP_INC(0)+VEG_QRP_EMISS(0))/SIGMA)**.25 !as done in FDS4
+ if (wc%veg_tmp_l(lburn+1) < tmpa-10.0_EB) then
+  print '(A,1x,4I3,1ES16.8)','vegtmp low: nm,iig,jjg,kkg,vege:wc%veg_tmp_l(lburn+1)',nm,iig,jjg,kkg,wc%veg_tmp_l(lburn+1)
+!    wc%one_d%tmp_f = max(tmp_g,tmpa) !Tveg=Tgas if Tveg is negative
+ endif 
+!!   TMP_F(IW) = ((VEG_QRP_INC(0)+VEG_QRP_EMISS(0))/SIGMA)**.25 !as done in FDS4
   ELSE
     WC%ONE_D%TMP_F = MAX(TMP_G,TMPA) !Tveg=Tgas if veg is completely burned
-!   TMP_F(IW) = TMPA  !Tveg=Tambient if veg is completely burned
   ENDIF
-! TMP_F(IW) = MAX(TMP_F(IW),TMPA)
+
+!if (iig >= 20 .and. iig <= 30 .and. jjg >= 20 .and. jjg <= 30) wc%one_d%tmp_f=393._EB
+!if (iig >= 20 .and. iig <= 30 .and. jjg >= 20 .and. jjg <= 30) WC%ONE_D%QCONF = -100._EB
+
+!checking for source of high temp (it's from char)
+!if(wc%veg_tmp_l(1+lburn) > 500._EB) then 
+! print '(A,1x,1I3,5ES16.8)','++++ lburn+1,tmpv,vegmass,moistmass,charmass,qnet_veg',lburn+1,wc%veg_tmp_l(1+lburn), &
+!             wc%veg_fuelmass_l(1+lburn),wc%veg_moistmass_l(1+lburn),wc%veg_charmass_l(1+lburn),qnet_veg
+!endif
 
 ENDDO VEG_WALL_CELL_LOOP
 

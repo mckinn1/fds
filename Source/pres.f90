@@ -302,10 +302,9 @@ SELECT CASE(IPS)
 
 END SELECT
 
-! In case of ScaRC-method leave routine
+! In case of ScaRC-, UScaRC-or GLMAT-method leave routine
 
-IF (PRES_METHOD == 'SCARC') RETURN
-IF (PRES_METHOD == 'GLMAT') RETURN
+IF (PRES_METHOD == 'GLMAT' .OR. PRES_METHOD == 'SCARC' .OR. PRES_METHOD == 'USCARC') RETURN
 
 ! Call the Poisson solver
 
@@ -484,7 +483,7 @@ SUBROUTINE COMPUTE_VELOCITY_ERROR(DT,NM)
 
 USE COMP_FUNCTIONS, ONLY: CURRENT_TIME
 USE GLOBAL_CONSTANTS, ONLY: PREDICTOR,VELOCITY_ERROR_MAX,SOLID_BOUNDARY,INTERPOLATED_BOUNDARY,VELOCITY_ERROR_MAX_LOC,T_USED,&
-                            EXTERNAL_BOUNDARY_CORRECTION,PRES_ON_WHOLE_DOMAIN
+                            EXTERNAL_BOUNDARY_CORRECTION,PRES_ON_WHOLE_DOMAIN,PRES_METHOD
 
 REAL(EB), INTENT(IN) :: DT
 INTEGER, INTENT(IN) :: NM
@@ -494,6 +493,7 @@ TYPE(OMESH_TYPE), POINTER :: OM
 TYPE(MESH_TYPE), POINTER :: M2
 TYPE(WALL_TYPE), POINTER :: WC
 TYPE(EXTERNAL_WALL_TYPE), POINTER :: EWC
+LOGICAL :: GLMAT_ON_WHOLE_DOMAIN
 
 TNOW=CURRENT_TIME()
 CALL POINT_TO_MESH(NM)
@@ -510,6 +510,9 @@ WALL_WORK1 = 0._EB
 ! Solve Laplace equation for pressure correction, H_PRIME, and add to H or HS.
 
 IF (EXTERNAL_BOUNDARY_CORRECTION) CALL LAPLACE_EXTERNAL_VELOCITY_CORRECTION(DT,NM)
+
+! Logical to define not to apply pressure gradient on external mesh boundaries for GLMAT.
+GLMAT_ON_WHOLE_DOMAIN = (PRES_METHOD=='GLMAT') .AND. PRES_ON_WHOLE_DOMAIN
 
 ! Loop over wall cells and check velocity error.
 
@@ -533,7 +536,9 @@ CHECK_WALL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
    IOR = WC%ONE_D%IOR
 
    DHFCT = 1._EB
-   IF (WC%BOUNDARY_TYPE==SOLID_BOUNDARY .AND. (.NOT.PRES_ON_WHOLE_DOMAIN)) DHFCT = 0._EB ! This factor makes DH/DN=0.
+   IF (WC%BOUNDARY_TYPE==SOLID_BOUNDARY) THEN
+      IF ( (.NOT.PRES_ON_WHOLE_DOMAIN) .OR. (GLMAT_ON_WHOLE_DOMAIN .AND.  IW<=N_EXTERNAL_WALL_CELLS) ) DHFCT = 0._EB
+   ENDIF
 
    ! Update normal component of velocity at the mesh boundary
 
@@ -1404,7 +1409,12 @@ INTEGER, SAVE :: NXB, NYB, NZB
 INTEGER :: CGSC=IS_CGSC, UNKH=IS_UNKH, NCVARS=IS_NCVARS
 
 ! Pardiso or Sparse cluster solver message level:
-INTEGER, PARAMETER :: MSGLVL = 0  ! 0 no messages, 1 print statistical information
+INTEGER, SAVE :: MSGLVL = 0  ! 0 no messages, 1 print statistical information
+
+!#define SINGLE_PRECISION_PSN_SOLVE
+#ifdef SINGLE_PRECISION_PSN_SOLVE
+REAL(FB), ALLOCATABLE, DIMENSION(:) :: F_H_FB, X_H_FB, A_H_FB
+#endif
 
 PRIVATE
 
@@ -1610,8 +1620,16 @@ PHASE    = 33 ! only solving
 !   CALL PARDISO(PT_H, MAXFCT, MNUM, MTYPE, PHASE, NUNKH_TOTAL, &
 !              A_H, IA_H, JA_H, PERM, NRHS, IPARM, MSGLVL, F_H, X_H, ERROR)
 #ifdef WITH_MKL
+#ifdef SINGLE_PRECISION_PSN_SOLVE
+F_H_FB(1:NUNKH_LOCAL) = REAL(F_H(1:NUNKH_LOCAL),FB)
+X_H_FB(1:NUNKH_LOCAL) = 0._FB
+CALL CLUSTER_SPARSE_SOLVER(PT_H, MAXFCT, MNUM, MTYPE, PHASE, NUNKH_TOTAL, &
+             A_H_FB, IA_H, JA_H, PERM, NRHS, IPARM, MSGLVL, F_H_FB, X_H_FB, MPI_COMM_WORLD, ERROR)
+X_H(1:NUNKH_LOCAL) = REAL(X_H_FB(1:NUNKH_LOCAL),EB)
+#else
 CALL CLUSTER_SPARSE_SOLVER(PT_H, MAXFCT, MNUM, MTYPE, PHASE, NUNKH_TOTAL, &
              A_H, IA_H, JA_H, PERM, NRHS, IPARM, MSGLVL, F_H, X_H, MPI_COMM_WORLD, ERROR)
+#endif
 #endif
 IF (ERROR /= 0) &
 WRITE(0,*) 'GLMAT_SOLVER_H: The following ERROR was detected: ', ERROR
@@ -2259,15 +2277,22 @@ USE MPI
 INTEGER :: INNZ, IROW, JCOL
 #ifdef WITH_MKL
 INTEGER :: PHASE, PERM(1)
-INTEGER :: I
+INTEGER :: I, IPROC
 #endif
 !.. All other variables
 INTEGER MAXFCT, MNUM, MTYPE, NRHS, ERROR
+#ifdef WITH_MKL
+INTEGER, ALLOCATABLE, DIMENSION(:,:) :: MB_FACTOR
+INTEGER :: IERR
+#endif
 
 ! Define parameters:
 NRHS   = 1
 MAXFCT = 1
 MNUM   = 1
+
+! Set level MSG to 1 for factorization:
+IF(GLMAT_VERBOSE) MSGLVL = 1
 
 ! Define control parameter vector iparm:
 ALLOCATE(IPARM(64)); IPARM(:) = 0
@@ -2275,7 +2300,11 @@ ALLOCATE(IPARM(64)); IPARM(:) = 0
 IPARM(1) = 1   ! no solver default
 ! Pardiso: IPARM(2) = 2   ! fill-in reordering from METIS
 #ifdef WITH_MKL
-IPARM(2) = 3   ! Parallel fill-in reordering from METIS
+IF (N_MPI_PROCESSES > 4) THEN ! Typical number of computing cores inside one chip.
+   IPARM(2) =10   ! 10 = MPI Parallel fill-in reordering from METIS. If 3 = OpenMP parallel reordering in Master Node.
+ELSE              ! Note IPARM(2)=10 has a bug which has been fixed from Intel MKL 2018 update 2 onwards.
+   IPARM(2) = 3
+ENDIF
 #endif
 IPARM(4) = 0   ! no iterative-direct algorithm
 IPARM(5) = 0   ! no user fill-in reducing permutation
@@ -2383,6 +2412,13 @@ ALLOCATE(PT_H(64))
 !    RETURN
 ! ENDIF
 
+! Define 4 byte A_H, F_H and X_H:
+#ifdef SINGLE_PRECISION_PSN_SOLVE
+IPARM(28) = 1 ! Single Precision solve.
+ALLOCATE(F_H_FB(1:NUNKH_LOCAL)); F_H_FB(1:NUNKH_LOCAL) = 0._FB
+ALLOCATE(X_H_FB(1:NUNKH_LOCAL)); X_H_FB(1:NUNKH_LOCAL) = 0._FB
+ALLOCATE( A_H_FB(TOT_NNZ_H) );   A_H_FB(1:TOT_NNZ_H)   = REAL(A_H(1:TOT_NNZ_H),FB)
+#endif
 
 #ifdef WITH_MKL
 ! Initialize solver pointer for H matrix solves:
@@ -2392,30 +2428,64 @@ ENDDO
 
 ! Reorder and Symbolic factorization:
 PHASE = 11
+#ifdef SINGLE_PRECISION_PSN_SOLVE
+CALL CLUSTER_SPARSE_SOLVER (PT_H, MAXFCT, MNUM, MTYPE, PHASE, NUNKH_TOTAL, &
+    A_H_FB, IA_H, JA_H, PERM, NRHS, IPARM, MSGLVL, F_H_FB, X_H_FB, MPI_COMM_WORLD, ERROR)
+#else
 CALL CLUSTER_SPARSE_SOLVER (PT_H, MAXFCT, MNUM, MTYPE, PHASE, NUNKH_TOTAL, &
     A_H, IA_H, JA_H, PERM, NRHS, IPARM, MSGLVL, F_H, X_H, MPI_COMM_WORLD, ERROR)
+#endif
 
 IF (ERROR /= 0) THEN
    IF (MYID==0) THEN
    WRITE(LU_ERR,'(A,I5)') 'GET_H_MATRIX_LUDCMP CLUSTER_SOLVER Sym Factor: The following ERROR was detected: ', ERROR
-   IF(ERROR == -4) WRITE(LU_ERR,'(A,A)') 'This error is probably due to having one or more sealed compartments ',&
-   ' besides a compartment with/without open boundary. Currently only one pressure zone is supported.'
+   IF(ERROR == -4) THEN
+      WRITE(LU_ERR,'(A,A)') 'This error is probably due to having one or more sealed compartments ',&
+      ' besides a compartment with/without open boundary. Currently only one pressure zone is supported.'
+   ELSEIF(ERROR == -2) THEN
+      WRITE(LU_ERR,'(A)') 'Not enough physical memory in your system for factoring the Poisson Matrix.'
+   ENDIF
    ENDIF
    ! Some error - stop flag for CALL STOP_CHECK(1).
    STOP_STATUS = SETUP_STOP
    RETURN
 END IF
 
+! Define array of MB required by process, gather data to Master:
+ALLOCATE(MB_FACTOR(2,0:N_MPI_PROCESSES-1)); MB_FACTOR(:,:)=0
+MB_FACTOR(1,MYID) = MAX(IPARM(15),IPARM(16)+IPARM(17))/1000
+MB_FACTOR(2,MYID) = NUNKH_LOCAL
+IF(N_MPI_PROCESSES > 1) &
+CALL MPI_ALLREDUCE(MPI_IN_PLACE, MB_FACTOR, 2*N_MPI_PROCESSES, MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, IERR)
+! Write to output file:
+IF(MYID==0) THEN
+   IPROC=MAXLOC(MB_FACTOR(1,0:N_MPI_PROCESSES-1),DIM=1) - 1 ! MaxLoc defines which element in the array, not index.
+   WRITE(LU_OUTPUT,*) '   MPI Process, H unknowns =',IPROC,MB_FACTOR(2,IPROC), &
+      ', Peak Factorization Memory Required (MB)=',MB_FACTOR(1,IPROC)
+ENDIF
+! Here do Memory test trying to allocate an array?
+! Difficult to do, nodes have varying numbers of MPI_PROCESSES and RAM.
+DEALLOCATE(MB_FACTOR)
+
 ! Numerical Factorization.
 PHASE = 22 ! only factorization
+#ifdef SINGLE_PRECISION_PSN_SOLVE
+CALL CLUSTER_SPARSE_SOLVER (PT_H, MAXFCT, MNUM, MTYPE, PHASE, NUNKH_TOTAL, &
+    A_H_FB, IA_H, JA_H, PERM, NRHS, IPARM, MSGLVL, F_H_FB, X_H_FB, MPI_COMM_WORLD, ERROR)
+#else
 CALL CLUSTER_SPARSE_SOLVER (PT_H, MAXFCT, MNUM, MTYPE, PHASE, NUNKH_TOTAL, &
   A_H, IA_H, JA_H, PERM, NRHS, IPARM, MSGLVL, F_H, X_H, MPI_COMM_WORLD, ERROR)
+#endif
 
 IF (ERROR /= 0) THEN
    IF (MYID==0) THEN
    WRITE(LU_ERR,'(A,I5)') 'GET_H_MATRIX_LUDCMP CLUSTER_SOLVER Num Factor: The following ERROR was detected: ', ERROR
-   IF(ERROR == -4) WRITE(LU_ERR,'(A,A)') 'This error is probably due to having one or more sealed compartments ',&
-   ' besides a compartment with/without open boundary. Currently only one pressure zone is supported.'
+   IF(ERROR == -4) THEN
+      WRITE(LU_ERR,'(A,A)') 'This error is probably due to having one or more sealed compartments ',&
+      ' besides a compartment with/without open boundary. Currently only one pressure zone is supported.'
+   ELSEIF(ERROR == -2) THEN
+      WRITE(LU_ERR,'(A)') 'Not enough physical memory in your system for factoring the Poisson Matrix.'
+   ENDIF
    ENDIF
    ! Some error - stop flag for CALL STOP_CHECK(1).
    STOP_STATUS = SETUP_STOP
@@ -2423,12 +2493,17 @@ IF (ERROR /= 0) THEN
 ENDIF
 
 #else
+
 IF (MYID==0) WRITE(LU_ERR,'(A)') &
 'Error: MKL Library compile flag was not defined for GLMAT as pressure solver.'
 ! Some error - stop flag for CALL STOP_CHECK(1).
 STOP_STATUS = SETUP_STOP
 RETURN
+
 #endif
+
+! Set level MSG to 0 for solution:
+IF(GLMAT_VERBOSE) MSGLVL = 0
 
 END SUBROUTINE GET_H_MATRIX_LUDCMP
 
@@ -2758,7 +2833,7 @@ USE MPI
 INTEGER :: NM
 INTEGER :: X1AXIS,IFACE,I,I1,J,K,IND(LOW_IND:HIGH_IND),IND_LOC(LOW_IND:HIGH_IND)
 INTEGER :: LOCROW,IIND,NII,ILOC
-INTEGER :: NREG,IIM,JJM,KKM,IIP,JJP,KKP,LOW_FACE,HIGH_FACE,JLOC,IW,II,JJ,KK,IIG,JJG,KKG,IERR,IPROC
+INTEGER :: NREG,IIM,JJM,KKM,IIP,JJP,KKP,LOW_FACE,HIGH_FACE,JLOC,IW,II,JJ,KK,IIG,JJG,KKG
 LOGICAL :: INLIST
 TYPE(IBM_REGFACE_TYPE), POINTER, DIMENSION(:) :: REGFACE_H=>NULL()
 TYPE(WALL_TYPE), POINTER :: WC=>NULL()
@@ -2771,13 +2846,8 @@ NUNKH_LOCAL = sum(NUNKH_LOC(1:NMESHES)) ! Filled in GET_MATRIX_INDEXES_H, only n
 
 ! Write number of pressure unknowns to output:
 IF (MYID==0) THEN
-   WRITE(LU_ERR,*) ' '
-   WRITE(LU_ERR,'(A)') ' Using GLMAT as pressure solver. List of H unknown numbers per proc:'
+   WRITE(LU_OUTPUT,'(A)') '   Using GLMAT as pressure solver. List of H unknown numbers per proc:'
 ENDIF
-DO IPROC=0,N_MPI_PROCESSES-1
-   CALL MPI_BARRIER(MPI_COMM_WORLD, IERR)
-   IF(MYID==IPROC) WRITE(LU_ERR,'(A,I8,A,I8)') ' MYID=',MYID,', NUNKH_LOCAL=',NUNKH_LOCAL
-ENDDO
 
 ! Allocate NNZ_D_MAT_H, JD_MAT_H:
 ALLOCATE( NNZ_D_MAT_H(1:NUNKH_LOCAL) )

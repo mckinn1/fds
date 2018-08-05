@@ -141,7 +141,7 @@ for f = 1:N_Fuels
       end
    end
 end
-Xmax = [0.25 0.2 0.2 0.2 0.07 0.04];
+Xmax = [0.25 0.25 0.2 0.10 0.10 0.02];
 for ns = 1:N_Species
    hf(ns)=figure(ns);
    %n = 0;
@@ -163,8 +163,8 @@ for ns = 1:N_Species
       end
    end
 
-   xmin = 0;
-   ymin = 0;
+   xmin = 0.;
+   ymin = 0.;
    xmax = Xmax(ns);
    ymax = xmax;
    plot([xmin xmax],[ymin ymax],'k-')
@@ -172,8 +172,8 @@ for ns = 1:N_Species
 
    set(gca,'PlotBoxAspectRatio',[1 1 1])
    set(gca,'FontName',Font_Name)
-   xtitle = ['Measured ' Species{ns} ' (volume fraction)'];
-   ytitle = ['Predicted ' Species{ns} ' (volume fraction)'];
+   xtitle = ['Measured ' Species{ns} ' (Mass Fraction)'];
+   ytitle = ['Predicted ' Species{ns} ' (Mass Fraction)'];
    xlabel(xtitle,'Interpreter',Font_Interpreter,'FontSize',Scat_Label_Font_Size)
    ylabel(ytitle,'Interpreter',Font_Interpreter,'FontSize',Scat_Label_Font_Size)
    lh=legend(hX,XLegendStr,'Location','NorthWest');

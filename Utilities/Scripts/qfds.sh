@@ -1,9 +1,6 @@
 #!/bin/bash
 
 #*** environment varables
-
-# OMP_PLACES       - cores, sockets or threads
-# OMP_PROC_BIND    - false, true, master, close or spread
 # RESOURCE_MANAGER - SLURM or TORQUE (default TORQUE)
 
 #*** environment variables used by the bots
@@ -77,7 +74,7 @@ fi
 # ---------------------------- usage ----------------------------------
 
 function usage {
-  echo "Usage: qfds.sh [-p nmpi_processes] [-o nthreads] [-e fds_command] [-q queue]  casename.fds"
+  echo "Usage: qfds.sh [-p n_mpi_processes] [-o nthreads] [-e fds_command] [-q queue]  casename.fds"
   echo ""
   echo "qfds.sh runs FDS using an executable from the repository or one specified with the -e option."
   echo "A parallel version of FDS is invoked by using -p to specify the number of MPI processes and/or"
@@ -93,13 +90,13 @@ function usage {
   echo " -o o - number of OpenMP threads per process [default: 1]"
   echo " -p p - number of MPI processes [default: 1] "
   echo " -q q - name of queue. [default: batch]"
-  echo "        If q is terminal then casename.fds is run in the foreground on the local computer"
   echo " -v   - output generated script to standard output"
   echo "input_file - input file"
   if [ "$HELP" == "" ]; then
     exit
   fi
   echo "Other options:"
+  echo " -c file - loads Intel Trace Collector configuration file "
   echo " -C   - use modules currently loaded rather than modules loaded when fds was built."
   echo " -d dir - specify directory where the case is found [default: .]"
   echo " -E - use tcp transport (only available with the Intel compiled versions of fds)"
@@ -107,18 +104,18 @@ function usage {
   echo " -f repository root - name and location of repository where FDS is located"
   echo "    [default: $FDSROOT]"
   echo " -i use installed fds"
-  echo " -I use Intel mpi version of fds"
+  echo " -I use Intel MPI version of fds"
+  echo " -L use Open MPI version of fds"
   echo " -m m - reserve m processes per node [default: 1]"
   echo " -M   -  add --mca plm_rsh_agent /usr/bin/ssh to mpirun command "
   echo " -n n - number of MPI processes per node [default: 1]"
-  echo " -N   - do not use socket or report binding options"
   echo " -O n - run cases casea.fds, caseb.fds, ... using 1, ..., N OpenMP threads"
   echo "        where case is specified on the command line. N can be at most 9."
-  echo " -r   - report bindings"
   echo " -s   - stop job"
   echo " -S   - use startup files to set the environment, do not load modules"
+  echo " -r   - append trace flag to the mpiexec call generated"
   echo " -t   - used for timing studies, run a job alone on a node (reserving $NCORES_COMPUTENODE cores)"
-  echo " -T type - run dv (development) or db (debug) version of fds"
+  echo " -T type - run dv (development), db (debug), inspect, advise, or vtune version of fds"
   echo "           if -T is not specified then the release version of fds is used"
   echo " -V   - show command line used to invoke qfds.sh"
   echo " -w time - walltime, where time is hh:mm for PBS and dd-hh:mm:ss for SLURM. [default: $walltime]"
@@ -179,8 +176,6 @@ fi
 #*** set default parameter values
 
 showcommandline=
-OMPPLACES=$OMP_PLACES
-OMPPROCBIND=$OMP_PROCBIND
 HELP=
 FDS_MODULE_OPTION=1
 MPIRUN=
@@ -195,24 +190,30 @@ if [ "$MPIRUN_MCA" != "" ]; then
   MCA=$MPIRUN_MCA
 fi
 
-nmpi_processes=1
-nmpi_processes_per_node=-1
+n_mpi_processes=1
+n_mpi_processes_per_node=-1
+if [ "$platform" == "linux" ]; then
+max_processes_per_node=`cat /proc/cpuinfo | grep cores | wc -l`
+else
 max_processes_per_node=1
-nopenmp_threads=1
+fi
+n_openmp_threads=1
+trace=
 use_installed=
 use_debug=
 use_devel=
+use_inspect=
+use_advise=
+use_vtune=
 use_intel_mpi=1
-nosocket="1"
+use_config=""
 # the mac doesn't have Intel MPI
 if [ "`uname`" == "Darwin" ]; then
   use_intel_mpi=
-  nosocket=
 fi
 dir=.
 benchmark=no
 showinput=0
-REPORT_BINDINGS="--report-bindings"
 exe=
 STARTUP=
 if [ "$QFDS_STARTUP" != "" ]; then
@@ -237,11 +238,14 @@ commandline=`echo $* | sed 's/-V//' | sed 's/-v//'`
 
 #*** read in parameters from command line
 
-while getopts 'ACd:e:Ef:hHiILm:MNn:o:O:p:Pq:rsStT:vVw:' OPTION
+while getopts 'Ac:Cd:e:Ef:hHiILm:MNn:o:O:p:Pq:rsStT:vVw:' OPTION
 do
 case $OPTION  in
   A) # used by timing scripts to identify benchmark cases
    DUMMY=1
+   ;;
+  c)
+   use_config="$OPTARG"
    ;;
   C)
    FDS_MODULE_OPTION=
@@ -272,11 +276,9 @@ case $OPTION  in
    ;;
   I)
    use_intel_mpi=1
-   nosocket="1"
    ;;
   L)
    use_intel_mpi=
-   nosocket=
    ;;
   M)
    MCA="--mca plm_rsh_agent /usr/bin/ssh "
@@ -285,42 +287,39 @@ case $OPTION  in
    max_processes_per_node="$OPTARG"
    ;;
   n)
-   nmpi_processes_per_node="$OPTARG"
-   ;;
-  N)
-   nosocket="1"
+   n_mpi_processes_per_node="$OPTARG"
    ;;
   o)
-   nopenmp_threads="$OPTARG"
+   n_openmp_threads="$OPTARG"
    ;;
   O)
    OPENMPCASES="$OPTARG"
    if [ $OPENMPCASES -gt 9 ]; then
      OPENMPCASES=9
    fi
-   nmpi_process=1
+   n_mpi_process=1
    benchmark="yes"
    if [ "$NCORES_COMPUTENODE" != "" ]; then
-     nmpi_processes_per_node="$NCORES_COMPUTENODE"
+     n_mpi_processes_per_node="$NCORES_COMPUTENODE"
    fi
    ;;
   p)
-   nmpi_processes="$OPTARG"
+   n_mpi_processes="$OPTARG"
    ;;
   P)
    OPENMPCASES="2"
    OPENMPTEST="1"
    benchmark="yes"
-   nmpi_process=1
+   n_mpi_process=1
    if [ "$NCORES_COMPUTENODE" != "" ]; then
-     nmpi_processes_per_node="$NCORES_COMPUTENODE"
+     n_mpi_processes_per_node="$NCORES_COMPUTENODE"
    fi
    ;;
   q)
    queue="$OPTARG"
    ;;
   r)
-   REPORT_BINDINGS="--report-bindings"
+   trace="-trace"
    ;;
   s)
    stopjob=1
@@ -331,7 +330,7 @@ case $OPTION  in
   t)
    benchmark="yes"
    if [ "$NCORES_COMPUTENODE" != "" ]; then
-     nmpi_processes_per_node="$NCORES_COMPUTENODE"
+     n_mpi_processes_per_node="$NCORES_COMPUTENODE"
    fi
    ;;
   T)
@@ -343,6 +342,15 @@ case $OPTION  in
    fi
    if [ "$TYPE" == "db" ]; then
      use_debug=1
+   fi
+   if [ "$TYPE" == "inspect" ]; then
+     use_inspect=1
+   fi
+   if [ "$TYPE" == "advise" ]; then
+     use_advise=1
+   fi
+   if [ "$TYPE" == "vtune" ]; then
+     use_vtune=1
    fi
    ;;
   v)
@@ -377,7 +385,7 @@ fi
 if [ "$OPENMPCASES" == "" ]; then
   files[1]=$in
   filebase[1]=$infile
-  nthreads[1]=$nopenmp_threads
+  nthreads[1]=$n_openmp_threads
 else
   for i in `seq 1 $OPENMPCASES`; do
     nthreads[$i]=$i
@@ -398,22 +406,6 @@ if [ "$walltime" == "" ]; then
     else
 	walltime=999:0:0
     fi
-fi
-
-if [[ "$OMPPLACES" != "" ]]; then
-  if [[ "$OMPPLACES" != "cores" ]] &&  [[ "$OMPPLACES" != "sockets" ]] &&  [[ "$OMPPLACES" == "threads" ]]; then
-    echo "*** error: OMP_PLACES can only be cores, sockets or threads"
-    exit
-  fi
-  OMPPLACES="OMP_PLACES=$OMPPLACES"
-fi
-
-if [ "$OMPPROCBIND" != "" ]; then
-  if [[ "$OMPPROCBIND" != "false" ]] &&  [[ "$OMPPROCBIND" != "true" ]] &&  [[ "$OMPPROCBIND" != "master" ]] &&  [[ "$OMPPROCBIND" == "close" ]] &&  [[ "$OMPPROCBIND" == "spread" ]]; then
-    echo "*** error: OMP_PROCBIND can only be false, true, master, close or spread"
-    exit
-  fi
-  OMPPROCBIND="OMP_PROC_BIND=$OMPPROCBIND"
 fi
 
 #*** define executable
@@ -439,6 +431,15 @@ else
   if [ "$use_devel" == "1" ]; then
     DB=_dv
   fi
+  if [ "$use_inspect" == "1" ]; then
+    DB=_inspect
+  fi
+  if [ "$use_advise" == "1" ]; then
+    DB=_advise
+  fi
+  if [ "$use_vtune" == "1" ]; then
+    DB=_vtune
+  fi
   if [ "$use_intel_mpi" == "1" ]; then
     if [ "$exe" == "" ]; then
       exe=$FDSROOT/fds/Build/impi_intel_${platform}_64$DB/fds_impi_intel_${platform}_64$DB
@@ -452,11 +453,10 @@ fi
 #*** check to see if fds was built using Intel MPI
 
 if [ -e $exe ]; then
-  if [ "$use_mpi_intel" == "" ]; then
+  if [ "$use_intel_mpi" == "" ]; then
     is_intel_mpi=`echo "" | $exe 2>&1 >/dev/null | grep MPI | grep library | grep Intel | wc -l`
     if [ "$is_intel_mpi" == "1" ]; then
          use_intel_mpi=1
-         nosocket="1"
     fi
   fi
 fi
@@ -486,19 +486,19 @@ fi
 
 #*** define number of nodes
 
-if test $nmpi_processes_per_node -gt $ncores ; then
-  nmpi_processes_per_node=$ncores
+if test $n_mpi_processes_per_node -gt $ncores ; then
+  n_mpi_processes_per_node=$ncores
 fi
 
-if test $nmpi_processes_per_node = -1 ; then
-  if test $nmpi_processes -gt 1 ; then
-    nmpi_processes_per_node=2
+if test $n_mpi_processes_per_node = -1 ; then
+  if test $n_mpi_processes -gt 1 ; then
+    n_mpi_processes_per_node=2
   else
-    nmpi_processes_per_node=1
+    n_mpi_processes_per_node=1
   fi
 fi
 
-let "nodes=($nmpi_processes-1)/$nmpi_processes_per_node+1"
+let "nodes=($n_mpi_processes-1)/$n_mpi_processes_per_node+1"
 if test $nodes -lt 1 ; then
   nodes=1
 fi
@@ -508,36 +508,49 @@ fi
 
 #*** define processes per node
 
-let "ppn=($nmpi_processes_per_node)"
-if test $ppn -le $max_processes_per_node ; then
+let ppn="$n_mpi_processes_per_node*n_openmp_threads"
+if [ $ppn -gt $max_processes_per_node ]; then
   ppn=$max_processes_per_node
 fi
 
-# default: Use mpirun option to bind processes to socket (for MPI).
-# Or, bind processs to and map processes by socket if
-# OpenMP is being used (number of OpenMP threads > 1).
+if [[ $n_openmp_threads -gt 1 ]] && [[ "$use_intel_mpi" == "1" ]]; then
+  ppn=2
+fi
 
-if test $nmpi_processes -gt 1 ; then
- if test $nopenmp_threads -gt 1 ; then
-  SOCKET_OPTION="--map-by socket:PE=$nopenmp_threads"
+# Socket or node bindings
+
+if test $n_mpi_processes -gt 1 ; then
+ if test $n_openmp_threads -gt 1 ; then
+  SOCKET_OPTION="--map-by socket:PE=$n_openmp_threads"
  else
   SOCKET_OPTION=" "
  fi
 else
- SOCKET_OPTION="--map-by node:PE=$nopenmp_threads"
+ SOCKET_OPTION="--map-by node:PE=$n_openmp_threads"
 fi
 
-#*** the "none" queue does not use the queing system,
-#    so blank out SOCKET_OPTIONS and REPORT_BINDINGS
+if [ "$use_intel_mpi" == "1" ]; then
+  SOCKET_OPTION=" "
+fi
 
-if [[ "$queue" == "none" ]] || [[ "$nosocket" == "1" ]]; then
+# Report bindings in the .err or .log file
+
+if [ "$use_intel_mpi" == "1" ]; then
+ REPORT_BINDINGS=" "
+else
+ REPORT_BINDINGS="--report-bindings"
+fi
+
+# The "none" queue does not use the queing system
+
+if [ "$queue" == "none" ]; then
  SOCKET_OPTION=
  REPORT_BINDINGS=
 fi
 
 #*** define MPIRUNEXE and do some error checking
 
-if [ "$use_intel_mpi" == "1" ]; then # using Intel MPI
+if [ "$use_intel_mpi" == "1" ]; then
   if [ "$use_installed" == "1" ]; then
     MPIRUNEXE=$fdsdir/mpiexec
     if [ ! -e $MPIRUNEXE ]; then
@@ -545,20 +558,18 @@ if [ "$use_intel_mpi" == "1" ]; then # using Intel MPI
       echo "Run aborted"
       ABORT=y
     fi
-    MPILABEL="IMPI"
   else
     if [ "$I_MPI_ROOT" == "" ]; then
       echo "Intel MPI environment not setup. Run aborted."
       ABORTRUN=y
     else
-      MPIRUNEXE=$I_MPI_ROOT/bin64/mpiexec
+      MPIRUNEXE=$I_MPI_ROOT/intel64/bin/mpiexec
       if [ ! -e $MPIRUNEXE ]; then
         echo "Intel mpiexec, $MPIRUNEXE, not found at:"
         echo "$MPIRUNEXE"
         ABORTRUN=y
         echo "Run aborted"
       fi
-      MPILABEL="IMPI"
     fi
   fi
 else                                 # using OpenMPI
@@ -580,11 +591,10 @@ else                                 # using OpenMPI
       ABORTRUN=y
     fi
   fi
-  MPILABEL="MPI"
 fi
 
-TITLE="$infile($MPILABEL)"
-MPIRUN="$MPIRUNEXE $REPORT_BINDINGS $SOCKET_OPTION $MCA -np $nmpi_processes"
+TITLE="$infile"
+MPIRUN="$MPIRUNEXE $REPORT_BINDINGS $SOCKET_OPTION $MCA -np $n_mpi_processes $trace"
 
 cd $dir
 fulldir=`pwd`
@@ -648,11 +658,6 @@ stop_fds_if_requested
 #QSUB="qsub -k eo -q $queue"
 QSUB="qsub -q $queue"
 
-if [ "$queue" == "terminal" ]; then
-  QSUB=
-  MPIRUN=
-fi
-
 #*** use the queue none and the program background on systems
 #    without a queing system
 
@@ -705,9 +710,9 @@ if [ "$queue" != "none" ]; then
 #SBATCH -e $outerr
 #SBATCH -o $outlog
 #SBATCH -p $queue
-#SBATCH -n $nmpi_processes
+#SBATCH -n $n_mpi_processes
 ####SBATCH --nodes=$nodes
-#SBATCH --cpus-per-task=$nopenmp_threads
+#SBATCH --cpus-per-task=$n_openmp_threads
 $SLURM_MEM
 EOF
     if [ "$walltimestring_slurm" != "" ]; then
@@ -729,6 +734,11 @@ EOF
 #PBS $walltimestring_pbs
 EOF
     fi
+    if [[ $n_openmp_threads -gt 1 ]] && [[ "$use_intel_mpi" == "1" ]]; then
+      cat << EOF >> $scriptfile
+#PBS -l naccesspolicy=SINGLEJOB -n
+EOF
+    fi
   fi
 fi
 
@@ -742,7 +752,7 @@ fi
 
 if [ "$OPENMPCASES" == "" ]; then
 cat << EOF >> $scriptfile
-export OMP_NUM_THREADS=$nopenmp_threads
+export OMP_NUM_THREADS=$n_openmp_threads
 EOF
 fi
 
@@ -752,24 +762,22 @@ export I_MPI_DEBUG=5
 EOF
 fi
 
+if [[ $n_openmp_threads -gt 1 ]] && [[ "$use_intel_mpi" == "1" ]]; then
+cat << EOF >> $scriptfile
+export I_MPI_PIN_DOMAIN=omp
+EOF
+fi
+
 if [ "$TCP" != "" ]; then
   cat << EOF >> $scriptfile
 export I_MPI_FABRICS=shm:tcp
 EOF
 fi
 
-if test $nopenmp_threads -gt 1 ; then
-  if [ "$OMPPLACES" != "" ]; then
-    cat << EOF >> $scriptfile
-export $OMPPLACES
+if [ "$use_config" != "" ]; then
+  cat << EOF >> $scriptfile
+export VT_CONFIG=$use_config
 EOF
-  fi
-
-  if [ "$OMPPROCBIND" != "" ]; then
-    cat << EOF >> $scriptfile
-export $OMPPROCBIND
-EOF
-  fi
 fi
 
 cat << EOF >> $scriptfile
@@ -863,10 +871,10 @@ fi
   fi
   echo "              Queue:$queue"
   echo "              Nodes:$nodes"
-  echo "          Processes:$nmpi_processes"
-  echo " Processes per node:$nmpi_processes_per_node"
-  if test $nopenmp_threads -gt 1 ; then
-    echo "Threads per process:$nopenmp_threads"
+  echo "          Processes:$n_mpi_processes"
+  echo " Processes per node:$n_mpi_processes_per_node"
+  if test $n_openmp_threads -gt 1 ; then
+    echo "Threads per process:$n_openmp_threads"
   fi
 fi
 

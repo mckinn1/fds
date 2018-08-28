@@ -631,10 +631,9 @@ VEG_WALL_CELL_LOOP: DO IW=1,N_EXTERNAL_WALL_CELLS+N_INTERNAL_WALL_CELLS
       IF(MPA_VEG <= MPA_VEG_MIN) TMP_VEG_NEW = TMP_G
       IF(TMP_VEG_NEW < TMPA) TMP_VEG_NEW = TMPA !clip
       WC%VEG_TMP_L(IVEG_L) = TMP_VEG_NEW
-!if (tmp_veg_new < TMPA) then
+!if (nm==1 .and. iig==26 .and. jjg==20 ) then
 ! print*,'-----------'
-! print '(A,1x,1I3,7ES16.8)','PY+:iv,tmp_veg_new,q_f_v,q_v,mveg,cpv,mc,cpc',iveg_l,tmp_veg_new,q_for_volit,q_volit, &
-!                             mpa_veg,cp_veg,mpa_char,cp_char
+! print '(A,1x,3I3,7ES16.8)','I,J,iveg,tmp_veg,massflux,',iig,jjg,iveg_l,tmp_veg_new,WC%ONE_D%MASSFLUX(I_FUEL)
 !endif
 
     ENDDO LAYER_LOOP1

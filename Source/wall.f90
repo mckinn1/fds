@@ -2977,7 +2977,7 @@ REAL(EB) :: DTMP,REACTION_RATE,Y_O2,X_O2,Q_DOT_S_PPP,MW_G,X_G,X_W,D_AIR,H_MASS,R
             SIGMA_BETA,RHO_DOT
 
 !rm ->
-REAL(EB) :: VEG_MLRMX,SFRHO_CHAR_MIN,SFRHO_VEG_MIN
+REAL(EB) :: VEG_MLRMAX,SFRHO_CHAR_MIN,SFRHO_VEG_MIN
 !rm <-
 
 Q_DOT_S_PPP = 0._EB
@@ -3090,10 +3090,10 @@ MATERIAL_LOOP: DO N=1,N_MATS  ! Tech Guide: Sum over the materials, alpha
 !rm -> Impose maximum bound on pyrolysis generated fuel vapor creation kg/s/m^3 
 !if (n==1) print '(A,1x,1I3,3ES12.4)','N,RHO_S(N),DT_BC,RHO_S0*REACTION_RATE',n,rho_s(n),dt_bc,rho_s0*reaction_rate
            IF (N==1) THEN
-             VEG_MLRMX = 0.35_EB*DX(IIG)*DY(JJG)*DZ(KKG)/(LP%PWT*PI*SF%LENGTH*SF%THICKNESS**2)
-             VEG_MLRMX = (1.0_EB - ML%NU_RESIDUE(1,J))*VEG_MLRMX
-             RHO_DOT = MIN(RHO_S0*REACTION_RATE,VEG_MLRMX)
-!print '(A,1x,1I3,1ES12.4)','N,VEG_MLRMX',n,veg_mlrmx
+             VEG_MLRMAX = SF%VEG_MLRPUVMAX*DX(IIG)*DY(JJG)*DZ(KKG)/(LP%PWT*PI*SF%LENGTH*SF%THICKNESS**2)
+             VEG_MLRMAX = (1.0_EB - ML%NU_RESIDUE(1,J))*VEG_MLRMAX
+             RHO_DOT = MIN(RHO_S0*REACTION_RATE,VEG_MLRMAX)
+!print '(A,1x,1I3,1ES12.4)','N,VEG_MLRMAX',n,veg_mlrmx
              RHO_DOT  = MIN(RHO_DOT , RHO_S(N)/DT_BC)
            ENDIF
 !rm <-
